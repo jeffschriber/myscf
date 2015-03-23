@@ -1,0 +1,11 @@
+test/input.dat
+test/output.dat
+test/timer.dat
+__init__.py
+__init__.pyc
+doc.rst
+myscf.cc
+myscf.so
+pymodule.py
+pymodule.pyc
+timer.dat
