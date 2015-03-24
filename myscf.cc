@@ -171,7 +171,6 @@ PsiReturnType myscf(Options &options)
 
 
     sEvals.invert();
-    sEvals.print();
 
     //get sMat^-1/2, called sMatInv
 
