@@ -49,8 +49,6 @@ int read_options(std::string name, Options &options)
     return true;
 }
 
-#define INDEX(i,j) (i>j) ? (ioff[i]+j):(ioff[j]+i)
-
 extern "C"
 PsiReturnType myscf(Options &options)
 {
@@ -58,6 +56,7 @@ PsiReturnType myscf(Options &options)
     int doTei = options.get_bool("DO_TEI");
 
     boost::shared_ptr<Molecule> molecule = Process::environment.molecule();
+    boost::shared_ptr<Wavefunction> wfn = Process::environment.wavefunction();
 
     // Form basis object:
     // Create a basis set parser object.
@@ -94,29 +93,19 @@ PsiReturnType myscf(Options &options)
     tOBI->compute(tMat);
     vOBI->compute(vMat);
 
-    sMat->print();
-    tMat->print();
-    vMat->print();
-
     // Form h = T + V by first cloning T and then adding V
     hMat->copy(tMat);
     hMat->add(vMat);
-    hMat->print();
+
 
     int ntri = hMat->nrow();
     ntri = ntri*ntri;
 
-    Vector ioff("ioff",ntri*(ntri+1.0)/2.0 );
-
-    ioff[0]=0;
-    for(int i=1; i<ntri*(ntri+1.0)/2.0; i++){
-        ioff[i]=ioff[i-1]+i;
-    }
-
+    //define Vector of two electron integrals
     SharedVector TEI(new Vector("TEI array", ntri*(ntri+1.0)/2.0));
 
     if(doTei){
-        psi::outfile->Printf("\n  Two-electron Integrals\n\n");
+      //  psi::outfile->Printf("\n  Two-electron Integrals\n\n");
 
         // Now, the two-electron integrals
         boost::shared_ptr<TwoBodyAOInt> eri(integral->eri());
@@ -135,13 +124,13 @@ PsiReturnType myscf(Options &options)
                     int q = intIter.j();
                     int r = intIter.k();
                     int s = intIter.l();
-                    psi::outfile->Printf("\t(%2d %2d | %2d %2d) = %20.15f\n",
-                        p, q, r, s, buffer[intIter.index()]);
+                    //psi::outfile->Printf("\t(%2d %2d | %2d %2d) = %20.15f\n",
+                      //  p, q, r, s, buffer[intIter.index()]);
                     ++count;
 
-                    int pq = INDEX(p,q);
-                    int rs = INDEX(r,s);
-                    int pqrs = INDEX(pq,rs);
+                    int pq = INDEX2(p,q);
+                    int rs = INDEX2(r,s);
+                    int pqrs = INDEX2(pq,rs);
                     TEI->set(pqrs, buffer[intIter.index()]);
                 }
             }
@@ -151,93 +140,65 @@ PsiReturnType myscf(Options &options)
     //Diagonalize the AO-overlap matrix sMat
     int dim = sMat->nrow();
 
-    Matrix L("L", dim, dim);
-    Matrix sEvals("sEvals", dim, dim);
-    Vector lambda("lambda", dim);
+    boost::shared_ptr<Matrix> L(new Matrix("L",dim,dim));
+    boost::shared_ptr<Matrix> sEvals(new Matrix("sEvals", dim, dim));
+    boost::shared_ptr<Vector> lambda(new Vector("lambda", dim));
 
     sMat->diagonalize(L, lambda);
-
-    //Map eigenvalue vector onto a diagonal matrix
-    for(int i=0; i<dim;i++){
-        for(int j=0; j<dim; j++){
-            if(i==j){
-                sEvals.set(i, j, sqrt(lambda.get(j)) );
-            }
-            else{
-                sEvals.set(i,j,0);
-            }
-        }
-    }
-
-
-    sEvals.invert();
+    sEvals->set_diagonal(lambda);
+    sEvals->invert();
+    sEvals->copy(sEvals->partial_cholesky_factorize(0.0,false)); //gets square root
 
     //get sMat^-1/2, called sMatInv
 
-    Matrix AB("AB", dim, dim);
-    Matrix sMatInv("sMatInv", dim, dim);
+    boost::shared_ptr<Matrix> AB(new Matrix("AB", dim, dim));
+    boost::shared_ptr<Matrix> sMatInv(new Matrix("sMatInv", dim, dim));
 
-    AB.gemm(false, false, 1.0, L, sEvals, 0);
-    sMatInv.gemm(false, true, 1.0, AB, L, 0);
-    sMatInv.print();
-
+    AB->gemm(false, false, 1.0, L, sEvals, 0.0);
+    sMatInv->gemm(false, true, 1.0, AB, L, 0.0);
 
     //Build the initial Fock Matrix
 
-    Matrix fInit("fInit", dim, dim);
-    Matrix fInitLeft("fInitLeft", dim, dim);
+    boost::shared_ptr<Matrix> fInit(new Matrix("fInit", dim, dim));
+    boost::shared_ptr<Matrix> fInitLeft(new Matrix("fInitLeft", dim, dim));
 
-    fInitLeft.gemm(true, false, 1.0, sMatInv, hMat, 0);
-    fInit.gemm(false, false, 1.0, fInitLeft, sMatInv, 0);
-
+    fInitLeft->gemm(true, false, 1.0, sMatInv, hMat, 0);
+    fInit->gemm(false, false, 1.0, fInitLeft, sMatInv, 0);
 
     //MOi is the initial Matrix resultant from Fock Matrix diagonalization, not
     //transformed to the original AO basis
 
-    Matrix MOi("MOi", dim, dim);
-    Vector initOrbEn("initOrbEn", dim);
+    boost::shared_ptr<Matrix> MOi(new Matrix("MOi", dim, dim));
+    boost::shared_ptr<Vector> initOrbEn(new Vector("initOrbEn", dim));
 
-    fInit.diagonalize(MOi, initOrbEn);
+    fInit->diagonalize(MOi, initOrbEn);
 
-    fInit.print();
     //Now, transform MOi to original AO basis
+    boost::shared_ptr<Matrix> moCoefInit(new Matrix("moCoefInit", dim, dim));
 
-    Matrix moCoefInit("moCoefInit", dim, dim);
+    moCoefInit->gemm(false, false, 1.0, sMatInv, MOi, 0);
 
-    moCoefInit.gemm(false, false, 1.0, sMatInv, MOi, 0);
+    //Build density matrix, summing over occupied MOs
+    boost::shared_ptr<Matrix> dmInit(new Matrix("dmInit", dim, dim));
+    int nocc = wfn->nalpha();
 
-    //Build density matrix using occupied MOs
-    Matrix dmInit("dmInit", dim, dim);
-
-    int natom = molecule->natom();
-    int Ztot = 0;
-
-    for(int i=0; i<natom; i++){
-        Ztot += molecule->fZ(i);
-    }
-
-    int nocc = Ztot/2;
-    psi::outfile->Printf("nocc: %d", nocc );
-
-    for(int v=0; v<dim; v++){
-        for(int u=0; u<dim; u++){
-            for(int m=0; m<nocc;m++){
-                    dmInit.add(u,v, moCoefInit(u,m) * moCoefInit(v,m) );
+    for(int u=0; u<dim; u++){
+        for(int v=0; v<dim; v++){
+            for(int m=0; m<nocc; m++){
+                dmInit->add(u,v, moCoefInit->get(u,m)*moCoefInit->get(v,m));
             }
         }
     }
+
+    //dmInit->gemm('n','t', dim, dim, dim, 1.0, moCoefInit, nocc, moCoefInit, nocc,0,dim);
 
     //Compute Initial SCF energy
 
     double Eelec = 0.0;
     double Einit;
 
-
-    for(int u=0; u<dim; u++){
-        for(int v=0; v<dim; v++){
-            Eelec += dmInit.get(u,v)*(2.0*hMat->get(u,v) );
-        }
-    }
+    fInit->add(hMat);
+    Eelec = dmInit->vector_dot(fInit);
 
     psi::outfile->Printf("\nInitial Electronic Energy: %8.12f a.u.\n", Eelec);
 
@@ -246,87 +207,81 @@ PsiReturnType myscf(Options &options)
 
     //Initialize a bunch of matrices outside of loop
 
-    Matrix fMatLeft("fMatLeft", dim, dim);
-    Matrix fMat("Fock Matrix", dim, dim);
-    Matrix fMatOrtho("fMatOrtho", dim, dim);
-    Matrix dMat("Density Matrix", dim, dim);
-    Matrix dMatPrev("dMatPrev", dim, dim);
-    Matrix cMatD("cMatD", dim, dim);
-    Matrix cMat("MO Coefficient Matrix", dim, dim);
-    Vector orben("Orbital Energies", dim);
+    boost::shared_ptr<Matrix> fMatLeft(new Matrix ("fMatLeft", dim, dim));
+    boost::shared_ptr<Matrix> fMat(new Matrix ("Fock Matrix", dim, dim));
+    boost::shared_ptr<Matrix> fMatOrtho(new Matrix ("fMatOrtho", dim, dim));
+    boost::shared_ptr<Matrix> dMat(new Matrix ("Density Matrix", dim, dim));
+    boost::shared_ptr<Matrix> dMatPrev(new Matrix ("dMatPrev", dim, dim));
+    boost::shared_ptr<Matrix> cMatD(new Matrix ("cMatD", dim, dim));
+    boost::shared_ptr<Matrix> cMat(new Matrix ("MO Coefficient Matrix", dim, dim));
+    boost::shared_ptr<Vector> orben(new Vector("Orbital Energies", dim));
 
-    dMat.copy(dmInit);
+    dMat->copy(dmInit);
 
     int iter = 1;
     double dE = 1;
     double rmsD = 1;
-    double Etot;
+    double Etot = 0.0;
 
-    //Start SCF procedure
+    /***Start SCF procedure***/
 
     outfile->Printf("\nStarting SCF Procedure:\n");
     outfile->Printf("\nIter        E(elec)              E(tot)               Delta(E)              RMS(D)\n");
 
-        while(fabs(dE) > 1e-12 && fabs(rmsD) > 7e-12){
+    while(fabs(dE) > 1e-12 and fabs(rmsD) > 7e-12){
 
-        fMat.copy(hMat);
+        fMat->copy(hMat);
 
         for(int i=0; i<dim; i++ ){
             for(int j=0; j<dim; j++){
                 for(int k=0; k<dim; k++){
                     for(int l=0; l<dim; l++){
-                        int ij = INDEX(i,j);
-                        int kl = INDEX(k,l);
-                        int ijkl = INDEX(ij,kl);
-                        int ik = INDEX(i,k);
-                        int jl = INDEX(j,l);
-                        int ikjl = INDEX(ik,jl);
+                        int ij = INDEX2(i,j);
+                        int kl = INDEX2(k,l);
+                        int ijkl = INDEX2(ij,kl);
+                        int ik = INDEX2(i,k);
+                        int jl = INDEX2(j,l);
+                        int ikjl = INDEX2(ik,jl);
 
-                        fMat.add(i,j, dMat.get(k,l) * ( 2*TEI->get(ijkl) - TEI->get(ikjl) ) );
+                        fMat->add(i,j, dMat->get(k,l) * ( 2*TEI->get(ijkl) - TEI->get(ikjl) ) );
 
                     }
                 }
             }
         }
 
-        fMatOrtho.copy(fMat);
+        fMatOrtho->copy(fMat);
 
         //Build new density matrix
-        fMatLeft.zero();
-        cMatD.zero();
-        cMat.zero();
-        orben.zero();
+        fMatLeft->zero();
+        cMatD->zero();
+        cMat->zero();
+        orben->zero();
 
-        fMatLeft.gemm(true, false, 1.0, sMatInv, fMat, 0);
-        fMat.gemm(false, false, 1.0, fMatLeft, sMatInv, 0);
+        fMatLeft->gemm(true, false, 1.0, sMatInv, fMat, 0);
+        fMat->gemm(false, false, 1.0, fMatLeft, sMatInv, 0);
 
-        fMat.diagonalize(cMatD, orben);
-        cMat.gemm(false, false, 1.0, sMatInv, cMatD, 0);
+        fMat->diagonalize(cMatD, orben);
+        cMat->gemm(false, false, 1.0, sMatInv, cMatD, 0);
 
-        dMatPrev.copy(dMat);
-        dMat.zero();
+        dMatPrev->copy(dMat);
+        dMat->zero();
+
         for(int u=0; u<dim; u++){
             for(int v=0; v<dim; v++){
                 for(int m=0; m<nocc; m++){
-                    dMat.add(u,v, cMat.get(u,m)*cMat.get(v,m));
-                    }
+                    dMat->add(u,v, cMat->get(u,m)*cMat->get(v,m));
                 }
             }
-
+        }
 
         //Compute new SCF energy
-        if(iter ==1){
-            Etot = Einit;
-        }
+        Eelec = 0.0;
         double Eprev = Etot;
-        Etot = 0;
-        Eelec = 0;
 
-        for(int u=0; u<dim; u++){
-            for(int v=0; v<dim; v++){
-                Eelec += dMat.get(u,v) * ( hMat->get(u,v) + fMatOrtho.get(u,v) );
-            }
-        }
+        hMat->add(fMatOrtho);
+        Eelec = dMat->vector_dot(hMat);
+        hMat->subtract(fMatOrtho);
 
         Etot = Eelec + nucrep;
 
@@ -334,12 +289,11 @@ PsiReturnType myscf(Options &options)
 
         dE = Etot - Eprev;
         rmsD = 0;
-        for(int i=0; i<dim; i++){
-            for(int j=0; j<dim; j++){
-                rmsD += (dMat.get(i,j)-dMatPrev.get(i,j)) * (dMat.get(i,j)-dMatPrev.get(i,j));
-            }
-        }
 
+        dMat->subtract(dMatPrev);
+        rmsD = dMat->vector_dot(dMat);
+
+        dMat->add(dMatPrev);
         rmsD = sqrt(rmsD);
 
 
