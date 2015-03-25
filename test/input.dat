@@ -21,7 +21,7 @@ set myscf {
 }
 
 energy('myscf')
-energy('scf')
+#energy('scf')
 
 myscf.exampleFN()
 

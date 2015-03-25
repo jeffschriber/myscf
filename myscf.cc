@@ -150,7 +150,6 @@ PsiReturnType myscf(Options &options)
     sEvals->copy(sEvals->partial_cholesky_factorize(0.0,false)); //gets square root
 
     //get sMat^-1/2, called sMatInv
-
     boost::shared_ptr<Matrix> AB(new Matrix("AB", dim, dim));
     boost::shared_ptr<Matrix> sMatInv(new Matrix("sMatInv", dim, dim));
 
@@ -158,7 +157,6 @@ PsiReturnType myscf(Options &options)
     sMatInv->gemm(false, true, 1.0, AB, L, 0.0);
 
     //Build the initial Fock Matrix
-
     boost::shared_ptr<Matrix> fInit(new Matrix("fInit", dim, dim));
     boost::shared_ptr<Matrix> fInitLeft(new Matrix("fInitLeft", dim, dim));
 
@@ -167,7 +165,6 @@ PsiReturnType myscf(Options &options)
 
     //MOi is the initial Matrix resultant from Fock Matrix diagonalization, not
     //transformed to the original AO basis
-
     boost::shared_ptr<Matrix> MOi(new Matrix("MOi", dim, dim));
     boost::shared_ptr<Vector> initOrbEn(new Vector("initOrbEn", dim));
 
@@ -175,25 +172,15 @@ PsiReturnType myscf(Options &options)
 
     //Now, transform MOi to original AO basis
     boost::shared_ptr<Matrix> moCoefInit(new Matrix("moCoefInit", dim, dim));
-
     moCoefInit->gemm(false, false, 1.0, sMatInv, MOi, 0);
 
     //Build density matrix, summing over occupied MOs
     boost::shared_ptr<Matrix> dmInit(new Matrix("dmInit", dim, dim));
     int nocc = wfn->nalpha();
 
-    for(int u=0; u<dim; u++){
-        for(int v=0; v<dim; v++){
-            for(int m=0; m<nocc; m++){
-                dmInit->add(u,v, moCoefInit->get(u,m)*moCoefInit->get(v,m));
-            }
-        }
-    }
-
-    //dmInit->gemm('n','t', dim, dim, dim, 1.0, moCoefInit, nocc, moCoefInit, nocc,0,dim);
+    dmInit->gemm('n','t', dim, dim, nocc, 1.0, moCoefInit, dim, moCoefInit, dim,0.0,dim);
 
     //Compute Initial SCF energy
-
     double Eelec = 0.0;
     double Einit;
 
@@ -267,13 +254,8 @@ PsiReturnType myscf(Options &options)
         dMatPrev->copy(dMat);
         dMat->zero();
 
-        for(int u=0; u<dim; u++){
-            for(int v=0; v<dim; v++){
-                for(int m=0; m<nocc; m++){
-                    dMat->add(u,v, cMat->get(u,m)*cMat->get(v,m));
-                }
-            }
-        }
+        //form Density matrix from Ca
+        dMat->gemm('n','t', dim, dim, nocc, 1.0, cMat, dim, cMat, dim,0.0,dim);
 
         //Compute new SCF energy
         Eelec = 0.0;
@@ -296,7 +278,6 @@ PsiReturnType myscf(Options &options)
         dMat->add(dMatPrev);
         rmsD = sqrt(rmsD);
 
-
         outfile->Printf("%02d %20.12f %20.12f %20.12f %20.12f\n", iter, Eelec, Etot, dE, rmsD);
 
         ++iter;
@@ -306,12 +287,13 @@ PsiReturnType myscf(Options &options)
         }
 
     }
+    outfile->Printf("\nSCF converged in %d cycles.\n", iter-1);
 
     outfile->Printf("\nSCF Electronic Energy: %20.12f a.u.", Eelec);
     outfile->Printf("\nSCF Nuclear Energy:    %20.12f a.u.", nucrep);
     outfile->Printf("\nSCF Total Energy:      %20.12f a.u.\n", Etot);
 
-    //Calculate on electron properties moment from components
+    //Calculate one electron properties
 
     outfile->Printf("\n =>One Electron properties<= \n");
 
